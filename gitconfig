@@ -1,0 +1,193 @@
+[core]
+  pager  = cat
+  editor = vim
+
+[user]
+  name     = Chris Jacobs
+  email    = rake74@gmail.com
+  username = chris.jacobs
+
+[color]
+  branch = auto
+  diff = auto
+  status = auto
+  showbranch = auto
+  ui = true
+
+[diff]
+  algorithm = patience
+
+[push]
+  default = current
+
+[alias]
+# Core helpers (POSIX-only)
+current = rev-parse --abbrev-ref HEAD
+
+do = "!f() { \
+  printf '%s ' git \"$@\" '->'; \
+  cmd_out=$(git \"$@\" 2>&1); \
+  ret=$?; \
+  if [ $ret -eq 0 ]; then printf 'OK '; else printf 'FAIL '; fi; \
+  if [ -n \"$cmd_out\" ]; then printf \"%s\\n\" \"$cmd_out\"; fi; \
+  return $ret; \
+}; f"
+
+lastlog = "!f() { \
+  case \"$1\" in -[0-9]* ) git log \"$@\"; ;; * ) git log \"$@\" -1; ;; esac; \
+}; f"
+
+pu = "!f() { git push -u $@; }; f"
+
+pushf = "!f() { \
+  cur=$(git current); \
+  git do push --force -u -q \"$@\" | grep -e git -e \"$cur\"; \
+}; f"
+
+pullf = "!f() { \
+  git reset -q HEAD~1 --hard && \
+  git clean -qf && \
+  git pull -q; \
+}; f"
+
+# User-facing common operations
+amend = commit --amend --no-edit
+
+aaf = "!f() { \
+  if [ $# -gt 0 ]; then \
+    for F in \"$@\"; do \
+      git do add -A \"$GIT_PREFIX/$F\" || return $?; \
+    done; \
+  else \
+    git do add -A || return $?; \
+  fi && \
+  git do amend -q --no-verify && \
+  git pushf --no-verify; \
+}; f"
+
+co = checkout
+
+head = "!f() { \
+  git symbolic-ref refs/remotes/origin/HEAD --short | sed 's,origin/,,'; \
+}; f"
+
+sw = "!f() { \
+  git checkout $(git show-ref --verify --quiet refs/heads/\"$1\" || echo '-b') \"$1\"; \
+}; f"
+
+name = "!git lastlog --name-status --oneline"
+
+p = "!f() { \
+  N=1; \
+  case \"$1\" in \
+    [0-9]*) N=$1; shift ;; \
+  esac; \
+  git log -\"$N\" -w -p \"$@\"; \
+}; f"
+
+stat = status --short --branch
+
+nuke = "!f() { \
+  if [ -z \"$1\" ]; then echo 'no branch arg' >&2; exit 1; fi; \
+  git branch -D -q \"$@\" && \
+  git push --delete origin -q \"$@\" --no-verify; \
+}; f"
+
+brren = "!f() { \
+  N=\"$1\"; \
+  if [ -z \"$N\" ]; then echo 'need new branch name' >&2; return 1; fi; \
+  O=$(git current); \
+  git branch -m \"$N\" && \
+  git push origin -u \"$N\" --no-verify && \
+  git push origin --delete \"$O\" --no-verify; \
+}; f"
+
+brshow = "!f() { \
+  git for-each-ref --format='%(committerdate:short) %(authoremail) %(refname)' \
+    | grep -v -e HEAD -e master -e ' refs/tags' \
+    | sort -k5n -k2M -k3n -k4n \
+    | sed -r 's,refs/(heads|remotes/origin)/,,g' \
+    | sort -Vu | column -t; \
+}; f"
+
+brsh = "!f() { \
+  no_color=0; \
+  if [ \"$1\" = \"--no-color\" ]; then no_color=1; shift; fi; \
+  git fetch --all --prune > /dev/null 2>&1; \
+  main=$(git symbolic-ref --quiet refs/remotes/origin/HEAD | sed 's|.*/||'); \
+  main=${main:-main}; \
+  raw=$( \
+    git for-each-ref --format='%(refname)' refs/heads refs/remotes/origin | while read branch; do \
+      if echo \"$branch\" | grep -q -E 'HEAD|/${main}$' ; then continue; fi; \
+      short=$(echo \"$branch\" | sed 's|refs/heads/||;s|refs/remotes/origin/||' | cut -c -60); \
+      date=$(git log -1 --format='%cd' --date=format:'%Y-%m-%d' \"$branch\"); \
+      author=$(git log -1 --format='%ae' \"$branch\" | cut -c -25); \
+      delta=$(git rev-list --left-right --count \"$main...$branch\"); \
+      behind=$(echo \"$delta\" | awk '{print $1}'); \
+      ahead=$(echo \"$delta\" | awk '{print $2}'); \
+      echo \"${date} ${behind} ${ahead} ${author} ${short}\"; \
+    done | sort -u -k1; \
+  ); \
+  max_b_len=$(( $(echo \"${raw}\" | awk '{print $2}' | sort -n | tail -n1 | wc -c) - 1 )); \
+  max_a_len=$(( $(echo \"${raw}\" | awk '{print $3}' | sort -n | tail -n1 | wc -c) - 1 )); \
+  b_pad=$(printf '%*s' $(( max_b_len - 1 )) '' | tr ' ' '#'); \
+  a_pad=$(printf '%*s' $(( max_a_len - 1 )) '' | tr ' ' '#'); \
+  BA=\"${b_pad}B|A${a_pad}\"; \
+  output=$( \
+    ( \
+      echo \"DATE ${BA} AUTHOR BRANCH\"; \
+      echo \"$raw\" | while IFS= read -r L ; do \
+        set -- $L; \
+        behind=$2; \
+        ahead=$3; \
+        b_pad=$(printf '%*s' $(( max_b_len - ${#behind} )) '' | tr ' ' '#'); \
+        a_pad=$(printf '%*s' $(( max_a_len - ${#ahead}  )) '' | tr ' ' '#'); \
+        echo \"$1 ${b_pad}${behind}|${ahead}${a_pad} $4 $5\"; \
+      done; \
+    ) | column -t | tr '#' ' ' \
+  ); \
+  if [ $no_color -eq 0 ]; then \
+    echo \"$output\" | sed -E 's/ ([1-9][0-9]*)\\|/ \\x1b[31m\\1\\x1b[0m|/' | sed -E 's/\\|([1-9][0-9]*)/|\\x1b[32m\\1\\x1b[0m/'; \
+  else \
+    echo \"$output\"; \
+  fi; \
+}; f"
+
+rez = "!f() { \
+  if [ -z \"${1:-}\" ]; then echo 'must supply path or file' >&2; return 1; fi; \
+  if [ -e \"$1\" ]; then \
+    echo 'file is not deleted currently'; echo 'this alias is not directly helpful'; return 1; \
+  fi; \
+  del_commit=$(git log --full-history --pretty=format:\"%h\" -1 -- \"$1\"); \
+  echo \"commit where $1 was deleted: $del_commit\"; \
+  git checkout -q \"$del_commit\" && \
+  pre_commit=$(git log -2 --pretty=format:\"%h\" | tail -n1) && \
+  git checkout -q \"$pre_commit\" && \
+  echo \"now at previous commit $pre_commit\"; \
+}; f"
+
+squash = "!f() { \
+  main=$(git remote show origin | sed -n '/HEAD branch:/s/.*: //p'); \
+  first_commit=$(git log \"$main\"..HEAD --format=%H | tail -n1); \
+  author=$(git show --quiet --pretty='%an <%ae>' \"$first_commit\"); \
+  message=$(git show --quiet --pretty='%B' \"$first_commit\" | sed '$ d'); \
+  git reset --soft HEAD~${1} && \
+  git commit --no-edit --author=\"$author\" --message=\"$message\"; \
+}; f"
+
+[remote "origin"]
+  prune = true
+
+[pull]
+  ff-only = true
+#  rebase = true
+
+[rebase]
+  autoStash = true
+
+[merge]
+  ff-only = true
+  ff = only
+
+[safe]
+	directory = *

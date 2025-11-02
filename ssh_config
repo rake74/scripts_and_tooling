@@ -1,0 +1,19 @@
+# Reminder: first set/matched wins.
+
+# CanonicalDomains your domain list here
+CanonicalizeHostname yes
+GSSAPIAuthentication no
+HashKnownHosts       yes
+LogLevel             INFO
+PermitLocalCommand   no
+Protocol             2
+ServerAliveInterval  15
+UpdateHostKeys       yes
+
+# Trusted hosts/domains
+Host localhost
+  ForwardAgent yes
+
+# Default untrusted
+Host *
+  ForwardAgent no

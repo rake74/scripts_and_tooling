@@ -1,0 +1,118 @@
+#!/bin/bash
+
+# This script starts ssh-agent if not running, saves its environment variables,
+# and dynamically loads all private keys that the ssh client would use.
+
+# It is designed to be sourced in shell startup files like .bashrc or .bash_profile
+# Example: source ~/bin/ssh_agenter.sh
+
+ssh_agenter() {
+  local sess_file
+  sess_file=$(readlink -f ~/.ssh/ssh_agent)
+  local sess_sock
+  sess_sock=$(readlink -f ~/.ssh/ssh_agent_sock)
+  local VERBOSE=${verbose:-false}
+
+  # Unset to ensure we load from the session file or a new agent
+  SSH_AUTH_SOCK=''
+  SSH_AGENT_PID=''
+
+  # If a session file exists, load the variables from it
+  [ -f "$sess_file" ] && eval "$(cat "$sess_file")"
+
+  # Clean up existing agent processes and files
+  ssh_agenter_cleanup() {
+    [ -n "${1:-}" ] \
+    && $VERBOSE && echo -e "$@ - cleaning up processes and files" 1>&2
+    # Kill any ssh-agent processes running for the current user
+    killall -s9 ssh-agent --user "$(id --user --name)" 2> /dev/null
+    rm -f "$sess_sock" "$sess_file"
+    SSH_AUTH_SOCK=''
+    SSH_AGENT_PID=''
+  }
+
+  ssh_id_list() { ssh-add -l 2> /dev/null ; }
+  ssh_agent_pid() { ps -hp "$SSH_AGENT_PID" 2> /dev/null ; }
+
+  # Determine if the existing agent is invalid, warranting a cleanup
+  local cleanup_reason=()
+  [ -z "$SSH_AUTH_SOCK" ] || [ -z "$SSH_AGENT_PID" ]   && cleanup_reason+=('SSH vars not set')
+  [ -n "$SSH_AGENT_PID" ] && [ -z "$(ssh_agent_pid)" ] && cleanup_reason+=('agent not running')
+  [ -n "$SSH_AUTH_SOCK" ] && [ ! -S "$SSH_AUTH_SOCK" ]   && cleanup_reason+=('auth sock not right/missing')
+
+  if (( ${#cleanup_reason[@]} > 0 )); then
+    local reason_str
+    reason_str=$(printf "%s, " "${cleanup_reason[@]}")
+    ssh_agenter_cleanup "${reason_str%, }"
+  fi
+
+  # Dynamically discover and add all configured SSH identity files
+  add_ssh_keys() {
+    local key_files_to_try
+    # Use ssh -G to get the actual list of identity files ssh will use
+    # mapfile reads each line of output into an array element
+    mapfile -t key_files_to_try < <(
+      ssh -G localhost | sed -n "s/^identityfile //Ip; s|~|$HOME|p"
+    )
+
+    if (( ${#key_files_to_try[@]} == 0 )); then
+      $VERBOSE && echo "Could not determine any identity files from 'ssh -G localhost'." 1>&2
+      return
+    fi
+
+    local key_file
+    for key_file in "${key_files_to_try[@]}"; do
+        # Continue to the next key if this one doesn't exist
+        [ ! -f "$key_file" ] && continue
+
+        # Check if the public key is already in the agent to avoid duplicates
+        if [ -f "${key_file}.pub" ] && ssh-add -L | grep -q -f "${key_file}.pub"; then
+            $VERBOSE && echo "Key ${key_file} already in agent." 1>&2
+        else
+            # Add the key, suppressing output on failure unless in verbose mode
+            ssh-add "$key_file" &>/dev/null || $VERBOSE && echo "Could not add ${key_file}. Requires passphrase or is invalid." 1>&2
+        fi
+    done
+  }
+
+  # If no agent socket is set, it's time to start a new agent
+  if [ -z "$SSH_AUTH_SOCK" ]; then
+    eval "$(ssh-agent -a "$sess_sock")" || {
+      echo 'Something went wrong with ssh-agent' 1>&2
+      ssh_agenter_cleanup
+      return 1
+    }
+
+    add_ssh_keys
+
+    # If, after trying, no keys were loaded, clean up the new agent
+    if [ -z "$(ssh_id_list)" ]; then
+        ssh_agenter_cleanup 'No usable identities found; shutting down new agent.'
+        return 1
+    fi
+
+    # Save the new agent's variables to the session file for other shells
+    {
+        echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK ; export SSH_AUTH_SOCK"
+        echo "SSH_AGENT_PID=$SSH_AGENT_PID ; export SSH_AGENT_PID"
+    } > "$sess_file"
+    chmod 600 "$sess_file" # Use secure permissions for the session file
+  else
+    # If an agent is already running, just ensure all configured keys are loaded
+    add_ssh_keys
+  fi
+
+  # Final check: if no identities are loaded at all, there's no point
+  if [ -z "$(ssh_id_list)" ]; then
+      ssh_agenter_cleanup 'No identities loaded in agent.'
+      return 1
+  fi
+
+  # Export the variables for the current shell to use
+  #echo "SSH_AGENT_PID=$SSH_AGENT_PID"
+  #echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK"
+  #echo "export SSH_AGENT_PID"
+  #echo "export SSH_AUTH_SOCK"
+}
+
+ssh_agenter
