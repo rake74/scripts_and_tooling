@@ -32,6 +32,9 @@ fi
 # setup ssh-agent # TODO
 [ -e ~/bin/ssh_agenter.sh ] && source ~/bin/ssh_agenter.sh
 
+# setup function to move CWD to repos
+[ -e ~/bin/repo.sh ] && source ~/bin/repo.sh
+
 # Git status for prompt.
 git_branch() {
   # Exit early if not in a git repository.
